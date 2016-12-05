@@ -67,6 +67,8 @@ class KarpathyGame(object):
         if not self.settings["hero_bounces_off_walls"]:
             self.hero.bounciness = 0.0
 
+        self.num_active = 5 #number of objects controlling movement
+
         self.objects = []
         for obj_type, number in settings["num_objects"].items():
             for _ in range(number):
@@ -74,7 +76,7 @@ class KarpathyGame(object):
 
         self.observation_lines = self.generate_observation_lines()
 
-        self.object_reward = 0
+        self.object_reward = np.zeros(self.num_active)
         self.collected_rewards = []
 
         # every observation_line sees one of objects or wall and
@@ -90,9 +92,12 @@ class KarpathyGame(object):
 
     def perform_action(self, action_id):
         """Change speed to one of hero vectors"""
-        assert 0 <= action_id < self.num_actions
-        self.hero.speed *= 0.5
-        self.hero.speed += self.directions[action_id] * self.settings["delta_v"]
+        for i in xrange(len(action_id)):
+            assert 0 <= action_id[i] < self.num_actions
+            #~self.hero.speed *= 0.5
+            #~self.hero.speed += self.directions[action_id] * self.settings["delta_v"]
+            self.objects[i].speed *= 0.5
+            self.objects[i].speed += self.directions[int(action_id[i])] * self.settings["delta_v"]
 
     def spawn_object(self, obj_type):
         """Spawn object of a given type and add it to the objects array"""
@@ -118,17 +123,21 @@ class KarpathyGame(object):
 
     def resolve_collisions(self):
         """If hero touches, hero eats. Also reward gets updated."""
+        #I think assumes all individuals are the same size
         collision_distance = 2 * self.settings["object_radius"]
         collision_distance2 = collision_distance ** 2
-        to_remove = []
-        for obj in self.objects:
-            if self.squared_distance(self.hero.position, obj.position) < collision_distance2:
-                to_remove.append(obj)
-        for obj in to_remove:
-            self.objects.remove(obj)
-            self.objects_eaten[obj.obj_type] += 1
-            self.object_reward += self.settings["object_reward"][obj.obj_type]
-            self.spawn_object(obj.obj_type)
+        for active_ind in xrange(self.num_active):
+            to_remove = []
+            #~for obj in self.objects:
+            for obj in self.objects[:active_ind] + self.objects[active_ind+1:]:  #FIX THIS TO INCLUSE THOSE BEFORE AS WELL
+                #~if self.squared_distance(self.hero.position, obj.position) < collision_distance2:
+                if self.squared_distance(self.objects[active_ind].position, obj.position) < collision_distance2:
+                    to_remove.append(obj)
+            for obj in to_remove:
+                self.objects.remove(obj)
+                self.objects_eaten[obj.obj_type] += 1
+                self.object_reward[active_ind] += self.settings["object_reward"][obj.obj_type]
+                self.spawn_object(obj.obj_type)
 
     def inside_walls(self, point):
         """Check if the point is inside the walls"""
@@ -146,96 +155,121 @@ class KarpathyGame(object):
 
         observable_distance = self.settings["observation_line_length"]
 
-        relevant_objects = [obj for obj in self.objects
-                            if obj.position.distance(self.hero.position) < observable_distance]
-        # objects sorted from closest to furthest
-        relevant_objects.sort(key=lambda x: x.position.distance(self.hero.position))
+        #~relevant_objects = [obj for obj in self.objects
+        #~                    if obj.position.distance(self.hero.position) < observable_distance]
+        observation = np.zeros((self.num_active, self.observation_size))
+        for active_ind in xrange(self.num_active):
+            relevant_objects = [obj for obj in self.objects[:active_ind] + self.objects[active_ind + 1:]   # THIS NEEDS TO BE FIXED TO INCLUDE LESS THAN AS WELL
+                                if obj.position.distance(self.objects[active_ind].position) < observable_distance]
 
-        observation        = np.zeros(self.observation_size)
-        observation_offset = 0
-        for i, observation_line in enumerate(self.observation_lines):
-            # shift to hero position
-            observation_line = LineSegment2(self.hero.position + Vector2(*observation_line.p1),
-                                            self.hero.position + Vector2(*observation_line.p2))
 
-            observed_object = None
-            # if end of observation line is outside of walls, we see the wall.
-            if not self.inside_walls(observation_line.p2):
-                observed_object = "**wall**"
-            for obj in relevant_objects:
-                if observation_line.distance(obj.position) < self.settings["object_radius"]:
-                    observed_object = obj
-                    break
-            object_type_id = None
-            speed_x, speed_y = 0, 0
-            proximity = 0
-            if observed_object == "**wall**": # wall seen
-                object_type_id = num_obj_types - 1
-                # a wall has fairly low speed...
+            # objects sorted from closest to furthest
+            #~relevant_objects.sort(key=lambda x: x.position.distance(self.hero.position))
+            relevant_objects.sort(key=lambda x: x.position.distance(self.objects[active_ind].position))
+
+            #~observation        = np.zeros(self.observation_size) #moved above top for loop
+            observation_offset = 0
+            for i, observation_line in enumerate(self.observation_lines):
+                # shift to hero position
+                #~observation_line = LineSegment2(self.hero.position + Vector2(*observation_line.p1),
+                #~                                self.hero.position + Vector2(*observation_line.p2))
+                observation_line = LineSegment2(self.objects[active_ind].position + Vector2(*observation_line.p1),
+                                                self.objects[active_ind].position + Vector2(*observation_line.p2))
+
+                observed_object = None
+                # if end of observation line is outside of walls, we see the wall.
+                if not self.inside_walls(observation_line.p2):
+                    observed_object = "**wall**"
+                for obj in relevant_objects:
+                    if observation_line.distance(obj.position) < self.settings["object_radius"]:
+                        observed_object = obj
+                        break
+                object_type_id = None
                 speed_x, speed_y = 0, 0
-                # best candidate is intersection between
-                # observation_line and a wall, that's
-                # closest to the hero
-                best_candidate = None
-                for wall in self.walls:
-                    candidate = observation_line.intersect(wall)
-                    if candidate is not None:
-                        if (best_candidate is None or
-                                best_candidate.distance(self.hero.position) >
-                                candidate.distance(self.hero.position)):
-                            best_candidate = candidate
-                if best_candidate is None:
-                    # assume it is due to rounding errors
-                    # and wall is barely touching observation line
-                    proximity = observable_distance
-                else:
-                    proximity = best_candidate.distance(self.hero.position)
-            elif observed_object is not None: # agent seen
-                object_type_id = self.settings["objects"].index(observed_object.obj_type)
-                speed_x, speed_y = tuple(observed_object.speed)
-                intersection_segment = obj.as_circle().intersect(observation_line)
-                assert intersection_segment is not None
-                try:
-                    proximity = min(intersection_segment.p1.distance(self.hero.position),
-                                    intersection_segment.p2.distance(self.hero.position))
-                except AttributeError:
-                    proximity = observable_distance
-            for object_type_idx_loop in range(num_obj_types):
-                observation[observation_offset + object_type_idx_loop] = 1.0
-            if object_type_id is not None:
-                observation[observation_offset + object_type_id] = proximity / observable_distance
-            observation[observation_offset + num_obj_types] =     speed_x   / max_speed_x
-            observation[observation_offset + num_obj_types + 1] = speed_y   / max_speed_y
-            assert num_obj_types + 2 == self.eye_observation_size
-            observation_offset += self.eye_observation_size
+                proximity = 0
+                if observed_object == "**wall**": # wall seen
+                    object_type_id = num_obj_types - 1
+                    # a wall has fairly low speed...
+                    speed_x, speed_y = 0, 0
+                    # best candidate is intersection between
+                    # observation_line and a wall, that's
+                    # closest to the hero
+                    best_candidate = None
+                    for wall in self.walls:
+                        candidate = observation_line.intersect(wall)
+                        if candidate is not None:
+                            #~if (best_candidate is None or
+                            #~        best_candidate.distance(self.hero.position) >
+                            #~        candidate.distance(self.hero.position)):
+                            if (best_candidate is None or
+                                    best_candidate.distance(self.objects[active_ind].position) >
+                                    candidate.distance(self.objects[active_ind].position)):
+                                best_candidate = candidate
+                    if best_candidate is None:
+                        # assume it is due to rounding errors
+                        # and wall is barely touching observation line
+                        proximity = observable_distance
+                    else:
+                        #~proximity = best_candidate.distance(self.hero.position)
+                        proximity = best_candidate.distance(self.objects[active_ind].position)
+                elif observed_object is not None: # agent seen
+                    object_type_id = self.settings["objects"].index(observed_object.obj_type)
+                    speed_x, speed_y = tuple(observed_object.speed)
+                    intersection_segment = obj.as_circle().intersect(observation_line)
+                    assert intersection_segment is not None
+                    try:
+                        #~proximity = min(intersection_segment.p1.distance(self.hero.position),
+                        #~                intersection_segment.p2.distance(self.hero.position))
+                        proximity = min(intersection_segment.p1.distance(self.objects[active_ind].position),
+                                        intersection_segment.p2.distance(self.objects[active_ind].position))
+                    except AttributeError:
+                        proximity = observable_distance
+                for object_type_idx_loop in range(num_obj_types):
+                    observation[active_ind, observation_offset + object_type_idx_loop] = 1.0
+                if object_type_id is not None:
+                    observation[active_ind, observation_offset + object_type_id] = proximity / observable_distance
+                observation[active_ind, observation_offset + num_obj_types] =     speed_x   / max_speed_x
+                observation[active_ind, observation_offset + num_obj_types + 1] = speed_y   / max_speed_y
+                assert num_obj_types + 2 == self.eye_observation_size
+                observation_offset += self.eye_observation_size
 
-        observation[observation_offset]     = self.hero.speed[0] / max_speed_x
-        observation[observation_offset + 1] = self.hero.speed[1] / max_speed_y
-        observation_offset += 2
-        
-        # add normalized locaiton of the hero in environment        
-        observation[observation_offset]     = self.hero.position[0] / 350.0 - 1.0
-        observation[observation_offset + 1] = self.hero.position[1] / 250.0 - 1.0
-        
-        assert observation_offset + 2 == self.observation_size
+            #~observation[observation_offset]     = self.hero.speed[0] / max_speed_x
+            #~observation[observation_offset + 1] = self.hero.speed[1] / max_speed_y
+            observation[active_ind, observation_offset]     = self.objects[active_ind].speed[0] / max_speed_x
+            observation[active_ind, observation_offset + 1] = self.objects[active_ind].speed[1] / max_speed_y
+            observation_offset += 2
+            
+            # add normalized locaiton of the hero in environment        
+            #~observation[observation_offset]     = self.hero.position[0] / (self.size[0] / 2) - 1.0  #originally was / 350.0
+            #~observation[observation_offset + 1] = self.hero.position[1] / (self.size[1] / 2) - 1.0  # orginally was / 250.0
+            observation[active_ind, observation_offset]     = self.objects[active_ind].position[0] / (self.size[0] / 2) - 1.0  #originally was / 350.0
+            observation[active_ind, observation_offset + 1] = self.objects[active_ind].position[1] / (self.size[1] / 2) - 1.0  # orginally was / 250.0
+
+            assert observation_offset + 2 == self.observation_size
 
         return observation
 
-    def distance_to_walls(self):
+    #~def distance_to_walls(self):
+    def distance_to_walls(self, obj):
         """Returns distance of a hero to walls"""
         res = float('inf')
         for wall in self.walls:
-            res = min(res, self.hero.position.distance(wall))
+            #~res = min(res, self.hero.position.distance(wall))
+            res = min(res, obj.position.distance(wall))
         return res - self.settings["object_radius"]
 
     def collect_reward(self):
         """Return accumulated object eating score + current distance to walls score"""
-        wall_reward =  self.settings["wall_distance_penalty"] * \
-                       np.exp(-self.distance_to_walls() / self.settings["tolerable_distance_to_wall"])
-        assert wall_reward < 1e-3, "You are rewarding hero for being close to the wall!"
-        total_reward = wall_reward + self.object_reward
-        self.object_reward = 0
-        self.collected_rewards.append(total_reward)
+        #~wall_reward =  self.settings["wall_distance_penalty"] * \
+        #~               np.exp(-self.distance_to_walls() / self.settings["tolerable_distance_to_wall"])
+        total_reward = np.zeros(self.num_active)
+        for active_ind in xrange(self.num_active):
+            wall_reward =  self.settings["wall_distance_penalty"] * \
+                           np.exp(-self.distance_to_walls(self.objects[active_ind]) / self.settings["tolerable_distance_to_wall"])
+            assert wall_reward < 1e-3, "You are rewarding hero for being close to the wall!"
+            total_reward[active_ind] = wall_reward + self.object_reward[active_ind]
+            self.object_reward[active_ind] = 0
+            self.collected_rewards.append(total_reward[active_ind])
         return total_reward
 
     def plot_reward(self, smoothing = 30):
@@ -274,7 +308,7 @@ class KarpathyGame(object):
         recent_reward = self.collected_rewards[-100:] + [0]
         objects_eaten_str = ', '.join(["%s: %s" % (o,c) for o,c in self.objects_eaten.items()])
         stats.extend([
-            "nearest wall = %.1f" % (self.distance_to_walls(),),
+            "nearest wall = %.1f" % (self.distance_to_walls(self.objects[0]),),
             "reward       = %.1f" % (sum(recent_reward)/len(recent_reward),),
             "objects eaten => %s" % (objects_eaten_str,),
         ])

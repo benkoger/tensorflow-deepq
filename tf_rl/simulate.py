@@ -78,6 +78,8 @@ def simulate(simulation,
 
     for frame_no in count():
         for _ in range(chunks_per_frame):
+            #move all the individuals for one time step
+            #deal with any collisions
             simulation.step(chunk_length_s)
 
         if frame_no % action_every == 0:

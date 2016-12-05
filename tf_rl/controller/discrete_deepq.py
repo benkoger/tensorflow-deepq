@@ -181,19 +181,24 @@ class DiscreteDeepQ(object):
     def action(self, observation):
         """Given observation returns the action that should be chosen using
         DeepQ learning strategy. Does not backprop."""
-        assert observation.shape == self.observation_shape, \
-                "Action is performed based on single observation."
+        actions = np.zeros(len(observation[:,1]))
+        for i in xrange(len(actions)):
+            assert observation[i].shape == self.observation_shape, \
+                    "Action is performed based on single observation."
 
-        self.actions_executed_so_far += 1
-        exploration_p = self.linear_annealing(self.actions_executed_so_far,
-                                              self.exploration_period,
-                                              1.0,
-                                              self.random_action_probability)
+            self.actions_executed_so_far += 1
+            exploration_p = self.linear_annealing(self.actions_executed_so_far,
+                                                  self.exploration_period,
+                                                  1.0,
+                                                  self.random_action_probability)
 
-        if random.random() < exploration_p:
-            return random.randint(0, self.num_actions - 1)
-        else:
-            return self.s.run(self.predicted_actions, {self.observation: observation[np.newaxis,:]})[0]
+            if random.random() < exploration_p:
+                actions[i] =  random.randint(0, self.num_actions - 1)
+            else:
+                #HACK, FIX THIS V
+
+                actions[i] = self.s.run(self.predicted_actions, {self.observation: observation[np.newaxis,i,:]})[0]
+        return actions
 
     def exploration_completed(self):
         return min(float(self.actions_executed_so_far) / self.exploration_period, 1.0)
@@ -206,9 +211,10 @@ class DiscreteDeepQ(object):
         If newstate is None, the state/action pair is assumed to be terminal
         """
         if self.number_of_times_store_called % self.store_every_nth == 0:
-            self.experience.append((observation, action, reward, newobservation))
-            if len(self.experience) > self.max_experience:
-                self.experience.popleft()
+            for i in xrange(len(reward)):
+                self.experience.append((observation[i], action[i], reward[i], newobservation[i]))
+                if len(self.experience) > self.max_experience:
+                    self.experience.popleft()
         self.number_of_times_store_called += 1
 
     def training_step(self):
@@ -281,7 +287,7 @@ class DiscreteDeepQ(object):
         }
 
         if debug:
-            print 'Saving model... ',
+            print('Saving model... ',)
 
         saving_started = time.time()
 
@@ -289,7 +295,7 @@ class DiscreteDeepQ(object):
         with open(STATE_FILE, "wb") as f:
             pickle.dump(state, f)
 
-        print 'done in {} s'.format(time.time() - saving_started)
+        print('done in {} s'.format(time.time() - saving_started))
 
     def restore(self, save_dir, debug=False):
         # deepq state
